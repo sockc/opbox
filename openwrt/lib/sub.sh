@@ -2,62 +2,66 @@
 . /usr/lib/sb-shunt/lib/common.sh
 . /usr/lib/sb-shunt/lib/deps.sh
 
-# 输出：nodes.json（数组，每项是一个 outbound，必须含 tag/type）
 sub_update_nodes() {
-  kind="$1"    # clash | sbox
-  src="$2"     # url or local file
-  out="$3"     # /etc/sb-shunt/nodes.json
+  kind="$1"   # clash | sbox
+  src="$2"    # url or local file
+  out="$3"    # nodes.json
   tmpdir="/tmp/sb-sub.$$"
   mkdir -p "$tmpdir"
 
   if [ "$kind" = "clash" ]; then
-    ensure_clash2singbox
-
+    ensure_clash2singbox || { rm -rf "$tmpdir"; return 1; }
     cd "$tmpdir" || return 1
-    # clash2singbox 默认生成/修改 config.json（按其 README 行为）
-    # 兼容不同参数名：-url 或 -u
     /usr/bin/clash2singbox -url "$src" >/dev/null 2>&1 || /usr/bin/clash2singbox -u "$src" >/dev/null 2>&1 || {
       echo "[ERR] clash2singbox 转换失败"
-      rm -rf "$tmpdir" >/dev/null 2>&1 || true
-      return 1
+      rm -rf "$tmpdir"; return 1
     }
-
-    [ -f "$tmpdir/config.json" ] || {
-      echo "[ERR] clash2singbox 未生成 config.json"
-      rm -rf "$tmpdir" >/dev/null 2>&1 || true
-      return 1
-    }
-
-    # 从转换结果中提取“真实节点 outbounds”
-    jq -c '
-      .outbounds
-      | map(select(.tag and .type))
-      | map(select(.type | IN("direct","block","dns","selector","urltest","loadbalance","group") | not))
-    ' "$tmpdir/config.json" >"$out" || return 1
-
+    [ -f "$tmpdir/config.json" ] || { echo "[ERR] 未生成 config.json"; rm -rf "$tmpdir"; return 1; }
+    f="$tmpdir/config.json"
   else
-    # sing-box JSON：支持（1）含 outbounds 的完整片段，（2）直接 array
     f="$tmpdir/sub.json"
     if [ -f "$src" ]; then
       cp -f "$src" "$f"
     else
-      dl_to "$src" "$f"
+      dl_to "$src" "$f" || { echo "[ERR] 订阅下载失败"; rm -rf "$tmpdir"; return 1; }
     fi
-
-    jq -c '
-      if type=="object" and .outbounds then .outbounds
-      elif type=="array" then .
-      else [] end
-      | map(select(.tag and .type))
-      | map(select(.type | IN("direct","block","dns","selector","urltest","loadbalance","group") | not))
-    ' "$f" >"$out" || return 1
   fi
 
-  # 基本校验：至少 1 个节点
-  n="$(jq 'length' "$out" 2>/dev/null || echo 0)"
-  [ "$n" -ge 1 ] || { echo "[ERR] 节点为空"; rm -rf "$tmpdir" >/dev/null 2>&1 || true; return 1; }
+  # 兼容：输入可能是 {outbounds:[...]} 或直接是 [...]
+  # 兼容：tag 缺失时自动生成 node-<index>
+  jq -c '
+    def arr:
+      if (type=="object") and (.outbounds!=null) then .outbounds
+      elif (type=="array") then .
+      else [] end;
+
+    arr
+    | to_entries
+    | map(.value | .tag = (.value.tag // .value.name // ("node-" + (.key|tostring))))
+    | map(select(
+        (.type!=null)
+        and (.type!="direct")
+        and (.type!="block")
+        and (.type!="dns")
+        and (.type!="selector")
+        and (.type!="urltest")
+        and (.type!="loadbalance")
+        and (.type!="group")
+      ))
+  ' "$f" >"$out" 2>/dev/null || {
+    echo "[ERR] 解析订阅失败（jq/内容异常）"
+    rm -rf "$tmpdir"; return 1
+  }
+
+  n="$(jq -r 'length' "$out" 2>/dev/null || echo 0)"
+  case "$n" in ''|*[!0-9]*) n=0;; esac
+  if [ "$n" -lt 1 ]; then
+    echo "[ERR] 节点为空"
+    echo "[DBG] outbounds.type（前30条）："
+    jq -r 'if (type=="object" and .outbounds) then .outbounds else . end | .[]?.type' "$f" 2>/dev/null | head -n 30 || true
+    rm -rf "$tmpdir"; return 1
+  fi
 
   rm -rf "$tmpdir" >/dev/null 2>&1 || true
   return 0
 }
-
