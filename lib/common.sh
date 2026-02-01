@@ -13,7 +13,7 @@ dl_to() {
   url="$1"; out="$2"
   mkdir -p "$(dirname "$out")"
   if cmd_ok curl; then
-    curl -fsSL --compressed "$url" -o "$out"
+    curl -fsSL "$url" -o "$out"
   elif cmd_ok wget; then
     wget -qO "$out" "$url"
   else
