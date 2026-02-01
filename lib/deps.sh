@@ -39,11 +39,21 @@ ensure_clash2singbox() {
     *) pat="$arch" ;;
   esac
 
+  case "$arch" in
+    x86_64|amd64) pat="amd64|x86_64|x64" ;;
+    aarch64|arm64) pat="arm64|aarch64" ;;
+    armv7l|armv7) pat="armv7|armv7l|arm" ;;
+    mipsel|mipsle) pat="mipsel|mipsle" ;;
+    mips) pat="mips" ;;
+    *) pat="$arch" ;;
+  esac
+
   url="$(jq -r --arg pat "$pat" '
-    .assets[].browser_download_url
-    | select(test("linux";"i"))
-    | select(test($pat;"i"))
-  ' "$json" 2>/dev/null | head -n1)"
+    [.assets[]
+      | select((.name|test($pat;"i")) or (.browser_download_url|test($pat;"i")))
+      | select(.name|test("sha256|checksum|sig|txt$";"i")|not)
+    ][0].browser_download_url // empty
+  ' "$json" 2>/dev/null)"
 
   [ -n "$url" ] || { echo "[ERR] clash2singbox 未找到匹配资产（arch=$arch）"; rm -f "$json"; return 1; }
 
