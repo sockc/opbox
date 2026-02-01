@@ -1,48 +1,42 @@
 #!/bin/sh
 set -eu
 
-REPO="${REPO:-sockc/opbox}"
+REPO="${REPO:-sockc/sb-shunt}"
 REF="${REF:-main}"
-ROOT="https://raw.githubusercontent.com/${REPO}/${REF}"
+BASE="https://raw.githubusercontent.com/${REPO}/${REF}/openwrt"
 
 BIN="/usr/bin/sb-shunt"
 LIBDIR="/usr/lib/sb-shunt/lib"
 INITD="/etc/init.d/sb-shunt"
 
-need_root() {
-  [ "$(id -u)" = "0" ] || { echo "[ERR] need root"; exit 1; }
-}
+need_root() { [ "$(id -u)" = "0" ] || { echo "[ERR] need root"; exit 1; }; }
 
 dl() {
-  url="$1"
-  out="$2"
+  url="$1"; out="$2"
   mkdir -p "$(dirname "$out")"
-
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$url" -o "$out"
+    curl -fsSL --compressed "$url" -o "$out"
   elif command -v wget >/dev/null 2>&1; then
     wget -qO "$out" "$url"
   else
-    echo "[ERR] need curl or wget"
-    exit 1
+    echo "[ERR] need curl or wget"; exit 1
   fi
 }
 
 install_files() {
   echo "[*] Installing files from ${REPO}@${REF} ..."
+  dl "${BASE}/sb-shunt" "${BIN}"
+  chmod +x "${BIN}"
 
-  # entry + openwrt specific
-  dl "${ROOT}/openwrt/sb-shunt"        "${BIN}"
-  dl "${ROOT}/openwrt/init.d/sb-shunt" "${INITD}"
+  dl "${BASE}/lib/common.sh" "${LIBDIR}/common.sh"
+  dl "${BASE}/lib/deps.sh"   "${LIBDIR}/deps.sh"
+  dl "${BASE}/lib/fw.sh"     "${LIBDIR}/fw.sh"
+  dl "${BASE}/lib/sub.sh"    "${LIBDIR}/sub.sh"
+  dl "${BASE}/lib/config.sh" "${LIBDIR}/config.sh"
 
-  # libs at repo root (/lib)
-  dl "${ROOT}/lib/common.sh" "${LIBDIR}/common.sh"
-  dl "${ROOT}/lib/deps.sh"   "${LIBDIR}/deps.sh"
-  dl "${ROOT}/lib/fw.sh"     "${LIBDIR}/fw.sh"
-  dl "${ROOT}/lib/sub.sh"    "${LIBDIR}/sub.sh"
-  dl "${ROOT}/lib/config.sh" "${LIBDIR}/config.sh"
+  dl "${BASE}/init.d/sb-shunt" "${INITD}"
+  chmod +x "${INITD}"
 
-  chmod +x "${BIN}" "${INITD}"
   echo "[OK] Files installed."
 }
 
