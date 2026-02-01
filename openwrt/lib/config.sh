@@ -70,7 +70,7 @@ gen_config() {
         else [] end;
 
       {
-        log: { level:"info", timestamp:true },
+        log: { level:"info", timestamp:true, output:"/tmp/sb-shunt.log" },
 
         dns: {
           independent_cache: true,
