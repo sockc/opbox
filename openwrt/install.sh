@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-REPO="${REPO:-sockc/sb-shunt}"
+REPO="${REPO:-sockc/opbox}"
 REF="${REF:-main}"
 BASE="https://raw.githubusercontent.com/${REPO}/${REF}/openwrt"
 
