@@ -9,6 +9,8 @@ set -eu
 : "${CONF_FILE:=/etc/sing-box/sb-shunt.json}"
 : "${WORKDIR:=/usr/share/sb-shunt}"
 : "${BIN:=/usr/bin/sing-box}"
+: "${WEB_PANEL:=false}" # 是否安装 web 面板，默认为 false
+: "${PANEL_PORT:=8080}" # Web 面板端口，默认 8080
 
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/${REF}"
 SELF="/usr/bin/sb-shunt"
@@ -120,17 +122,17 @@ EOF
 
 # ========= 配置生成（两种模式）=========
 # 说明：
-# - 采用 rule_set(.srs) 做 “国内直连/国外代理” 分流，避免 geoip/geosite 被移除的问题。:contentReference[oaicite:2]{index=2}
-# - tun + auto_route + auto_redirect：OpenWrt fw4 兼容由 sing-box 自动处理（更省事）。:contentReference[oaicite:3]{index=3}
-# - route.final 用来指定默认出站（不匹配规则时走哪个）。:contentReference[oaicite:4]{index=4}
+# - 采用 rule_set(.srs) 做 “国内直连/国外代理” 分流，避免 geoip/geosite 被移除的问题。([sing-box.sagernet.org](https://sing-box.sagernet.org/configuration/route/rule/))
+# - tun + auto_route + auto_redirect：OpenWrt fw4 兼容由 sing-box 自动处理（更省事）。([sing-box.sagernet.org](https://sing-box.sagernet.org/configuration/inbound/tun/))
+# - route.final 用来指定默认出站（不匹配规则时走哪个）。([sing-box.sagernet.org](https://sing-box.sagernet.org/configuration/route/))
 gen_config_mode1() {
   proxy_host="$1"
   proxy_port="$2"
   proxy_user="$3"
   proxy_pass="$4"
 
-  # DNS：简单规则（“With DNS leaks” 示例的思路：CN 走 local，其它走 google）:contentReference[oaicite:5]{index=5}
-  # 路由：CN 直连，其它走 proxy；包含 hijack-dns + 私网直连 + sniff。:contentReference[oaicite:6]{index=6}
+  # DNS：简单规则（“With DNS leaks” 示例的思路：CN 走 local，其它走 google）([sing-box.sagernet.org](https://sing-box.sagernet.org/zh/manual/proxy/client/))
+  # 路由：CN 直连，其它走 proxy；包含 hijack-dns + 私网直连 + sniff。([sing-box.sagernet.org](https://sing-box.sagernet.org/zh/manual/proxy/client/))
   cat > "$CONF_FILE" <<EOF
 {
   "log": {
@@ -250,8 +252,8 @@ gen_config_mode2() {
   proxy_user="$3"
   proxy_pass="$4"
 
-  # DNS：采用“Without DNS leaks, but slower” 的思路（logical 规则对 cn 场景给 google 附带 client_subnet）:contentReference[oaicite:7]{index=7}
-  # Route：额外 reject 853/udp443/stun，减少常见绕过；其余同“国内直连/国外代理”。:contentReference[oaicite:8]{index=8}
+  # DNS：采用“Without DNS leaks, but slower” 的思路（logical 规则对 cn 场景给 google 附带 client_subnet）([sing-box.sagernet.org](https://sing-box.sagernet.org/zh/manual/proxy/client/))
+  # Route：额外 reject 853/udp443/stun，减少常见绕过；其余同“国内直连/国外代理”。([sing-box.sagernet.org](https://sing-box.sagernet.org/zh/manual/proxy/client/))
   cat > "$CONF_FILE" <<EOF
 {
   "log": {
@@ -467,44 +469,3 @@ do_update() {
     rm -f "$tmp" || true
     pause
     return
-  fi
-
-  if has_cmd opkg && [ -x "$BIN" ]; then
-    echo "[*] 尝试更新 sing-box（opkg upgrade）..."
-    opkg update >/dev/null 2>&1 || true
-    opkg upgrade sing-box >/dev/null 2>&1 || true
-  fi
-
-  echo "[*] 重启服务..."
-  /etc/init.d/"$SVC" restart >/dev/null 2>&1 || true
-  echo "[OK] 更新完成"
-  pause
-}
-
-menu() {
-  while :; do
-    clear 2>/dev/null || true
-    echo "========================================"
-    echo " OpenWrt sing-box 出站分流一键脚本"
-    echo "========================================"
-    show_status
-    echo "----------------------------------------"
-    echo " 1) 安装 / 重新生成配置"
-    echo " 2) 卸载"
-    echo " 3) 更新（脚本 + 尝试升级 sing-box）"
-    echo " 0) 退出"
-    echo "----------------------------------------"
-    printf "请输入选项 [0-3]: "
-    read -r c
-    case "$c" in
-      1) do_install ;;
-      2) do_uninstall ;;
-      3) do_update ;;
-      0) exit 0 ;;
-      *) echo "[ERR] 无效选项"; pause ;;
-    esac
-  done
-}
-
-need_root
-menu
