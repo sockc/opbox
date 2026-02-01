@@ -1,1 +1,2 @@
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/sockc/opbox/main/install.sh)"
+sh <(curl -fsSL https://raw.githubusercontent.com/sockc/opbox/main/openwrt/install.sh)
+
