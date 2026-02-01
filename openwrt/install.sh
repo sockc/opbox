@@ -15,7 +15,7 @@ dl() {
   url="$1"; out="$2"
   mkdir -p "$(dirname "$out")"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --compressed "$url" -o "$out"
+    curl -fsSL "$url" -o "$out"
   elif command -v wget >/dev/null 2>&1; then
     wget -qO "$out" "$url"
   else
