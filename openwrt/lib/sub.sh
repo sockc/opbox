@@ -1,44 +1,47 @@
 #!/bin/sh
+# SB-SHUNT SUB.SH v20260202-fix3-outfile
+
 . /usr/lib/sb-shunt/lib/common.sh
 . /usr/lib/sb-shunt/lib/deps.sh
 
 sub_update_nodes() {
-  kind="$1"
-  src="$2"
-  out="$3"
-  tmpdir="/tmp/sb-sub.$$"
-  mkdir -p "$tmpdir"
+  KIND="$1"
+  SRC="$2"
+  OUTFILE="$3"
 
-  f="$tmpdir/sub.json"
+  echo "[DBG] sub_update_nodes: KIND=$KIND OUTFILE=$OUTFILE"
 
-  if [ "$kind" = "clash" ]; then
-    ensure_clash2singbox || { echo "[ERR] clash2singbox 不可用"; rm -rf "$tmpdir"; return 1; }
-    cd "$tmpdir" || return 1
-    /usr/bin/clash2singbox -url "$src" >/dev/null 2>&1 || /usr/bin/clash2singbox -u "$src" >/dev/null 2>&1 || {
+  TMPDIR="/tmp/sb-sub.$$"
+  mkdir -p "$TMPDIR"
+  SUBJSON="$TMPDIR/sub.json"
+  NODES_TMP="$TMPDIR/nodes.json"
+
+  if [ "$KIND" = "clash" ]; then
+    ensure_clash2singbox || { echo "[ERR] clash2singbox 不可用"; rm -rf "$TMPDIR"; return 1; }
+    cd "$TMPDIR" || return 1
+    /usr/bin/clash2singbox -url "$SRC" >/dev/null 2>&1 || /usr/bin/clash2singbox -u "$SRC" >/dev/null 2>&1 || {
       echo "[ERR] clash2singbox 转换失败"
-      rm -rf "$tmpdir"; return 1
+      rm -rf "$TMPDIR"; return 1
     }
-    [ -f "$tmpdir/config.json" ] || { echo "[ERR] 未生成 config.json"; rm -rf "$tmpdir"; return 1; }
-    mv "$tmpdir/config.json" "$f"
+    [ -f "$TMPDIR/config.json" ] || { echo "[ERR] 未生成 config.json"; rm -rf "$TMPDIR"; return 1; }
+    mv "$TMPDIR/config.json" "$SUBJSON"
   else
-    if [ -f "$src" ]; then
-      cp -f "$src" "$f"
+    if [ -f "$SRC" ]; then
+      cp -f "$SRC" "$SUBJSON"
     else
-      dl_to "$src" "$f" || { echo "[ERR] 订阅下载失败"; rm -rf "$tmpdir"; return 1; }
+      dl_to "$SRC" "$SUBJSON" || { echo "[ERR] 订阅下载失败"; rm -rf "$TMPDIR"; return 1; }
     fi
   fi
 
   # JSON 校验
-  jq -e '.' "$f" >/dev/null 2>&1 || {
-    echo "[ERR] 订阅内容不是 JSON（可能返回 HTML/空文件）"
+  jq -e '.' "$SUBJSON" >/dev/null 2>&1 || {
+    echo "[ERR] 订阅内容不是 JSON"
     echo "[DBG] 文件头 200 字节："
-    head -c 200 "$f" | cat -v; echo
-    rm -rf "$tmpdir"; return 1
+    head -c 200 "$SUBJSON" | cat -v; echo
+    rm -rf "$TMPDIR"; return 1
   }
 
-  tmp_nodes="$tmpdir/nodes.json"
-
-  # 抽取节点（兼容老 jq，不用 IN()）
+  # 抽取节点（兼容老 jq）
   jq -c '
     def arr:
       if (type=="object") and (.outbounds!=null) then .outbounds
@@ -58,29 +61,22 @@ sub_update_nodes() {
         and (.type!="loadbalance")
         and (.type!="group")
       ))
-  ' "$f" >"$tmp_nodes" 2>/dev/null || {
+  ' "$SUBJSON" >"$NODES_TMP" 2>/dev/null || {
     echo "[ERR] 解析 outbounds 失败"
-    rm -rf "$tmpdir"; return 1
+    rm -rf "$TMPDIR"; return 1
   }
 
-  n="$(jq -r 'length' "$tmp_nodes" 2>/dev/null || echo 0)"
-  case "$n" in ''|*[!0-9]*) n=0;; esac
-  [ "$n" -ge 1 ] || { echo "[ERR] 节点为空"; rm -rf "$tmpdir"; return 1; }
+  N="$(jq -r 'length' "$NODES_TMP" 2>/dev/null || echo 0)"
+  case "$N" in ''|*[!0-9]*) N=0;; esac
+  [ "$N" -ge 1 ] || { echo "[ERR] 节点为空"; rm -rf "$TMPDIR"; return 1; }
 
-  # 关键：写入 nodes.json（用 cp，避免 mv 跨分区/失败后文件丢失）
-  mkdir -p "$(dirname "$out")" || true
-  cp -f "$tmp_nodes" "$out" 2>/dev/null || {
-    echo "[ERR] 写入失败：$out"
-    rm -rf "$tmpdir"; return 1
-  }
+  mkdir -p "$(dirname "$OUTFILE")" || true
+  cat "$NODES_TMP" >"$OUTFILE" 2>/dev/null || { echo "[ERR] 写入失败：$OUTFILE"; rm -rf "$TMPDIR"; return 1; }
   sync >/dev/null 2>&1 || true
 
-  [ -s "$out" ] || {
-    echo "[ERR] 节点文件未落盘（为空或不存在）：$out"
-    rm -rf "$tmpdir"; return 1
-  }
+  [ -s "$OUTFILE" ] || { echo "[ERR] 节点文件未落盘：$OUTFILE"; rm -rf "$TMPDIR"; return 1; }
 
-  echo "[OK] 节点导入成功：$n -> $out"
-  rm -rf "$tmpdir" >/dev/null 2>&1 || true
+  echo "[OK] 节点导入成功：$N -> $OUTFILE"
+  rm -rf "$TMPDIR" >/dev/null 2>&1 || true
   return 0
 }
