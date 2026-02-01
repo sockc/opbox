@@ -1,0 +1,367 @@
+#!/bin/sh
+set -eu
+
+BASEDIR="/usr/lib/sb-shunt"
+. "${BASEDIR}/lib/common.sh"
+. "${BASEDIR}/lib/deps.sh"
+. "${BASEDIR}/lib/fw.sh"
+. "${BASEDIR}/lib/sub.sh"
+. "${BASEDIR}/lib/config.sh"
+
+SB_DIR="/etc/sb-shunt"
+SB_STATE="${SB_DIR}/state.conf"
+SB_NODES="${SB_DIR}/nodes.json"
+SB_CONF="${SB_DIR}/config.json"
+SB_LOG="/tmp/sb-shunt.log"
+
+state_init_defaults() {
+  MODE="${MODE:-1}"                 # 1 or 2
+  LAN_IF="${LAN_IF:-}"              # auto detect if empty
+  SUB_KIND="${SUB_KIND:-clash}"     # clash | sbox
+  SUB_URL="${SUB_URL:-}"
+  SELECTOR_DEFAULT="${SELECTOR_DEFAULT:-auto}"
+
+  API_ENABLE="${API_ENABLE:-0}"     # 0/1
+  API_LISTEN="${API_LISTEN:-127.0.0.1}"
+  API_PORT="${API_PORT:-9090}"
+  API_SECRET="${API_SECRET:-}"
+
+  PANEL_ENABLE="${PANEL_ENABLE:-0}" # 0/1 (clash api ui)
+  UI_DIR="${UI_DIR:-/usr/share/sb-shunt/ui}"
+  UI_DL_URL="${UI_DL_URL:-https://github.com/MetaCubeX/Yacd-meta/archive/gh-pages.zip}"
+
+  GH_PREFIX="${GH_PREFIX:-https://github.com}" # for rulesets (github mirror/proxy)
+}
+
+load_state() {
+  mkdir -p "$SB_DIR"
+  if [ -f "$SB_STATE" ]; then
+    # shellcheck disable=SC1090
+    . "$SB_STATE" || true
+  fi
+  state_init_defaults
+}
+
+save_state() {
+  umask 077
+  cat >"$SB_STATE" <<EOF
+MODE='${MODE}'
+LAN_IF='${LAN_IF}'
+SUB_KIND='${SUB_KIND}'
+SUB_URL='${SUB_URL}'
+SELECTOR_DEFAULT='${SELECTOR_DEFAULT}'
+
+API_ENABLE='${API_ENABLE}'
+API_LISTEN='${API_LISTEN}'
+API_PORT='${API_PORT}'
+API_SECRET='${API_SECRET}'
+
+PANEL_ENABLE='${PANEL_ENABLE}'
+UI_DIR='${UI_DIR}'
+UI_DL_URL='${UI_DL_URL}'
+
+GH_PREFIX='${GH_PREFIX}'
+EOF
+}
+
+svc_restart() {
+  /etc/init.d/sb-shunt restart >/dev/null 2>&1 || true
+}
+
+show_header() {
+  clear
+  echo "SB-Shunt (OpenWrt)  |  sing-box 出站分流"
+  echo "--------------------------------------------------"
+  if /etc/init.d/sb-shunt status >/dev/null 2>&1; then
+    echo "服务状态：运行中"
+  else
+    echo "服务状态：未运行"
+  fi
+  echo "模式：${MODE}   订阅：${SUB_KIND}   默认节点：${SELECTOR_DEFAULT}"
+  echo "API：${API_ENABLE}(${API_LISTEN}:${API_PORT})  面板：${PANEL_ENABLE}"
+  echo "--------------------------------------------------"
+}
+
+pause() { echo ""; echo "按回车继续..."; read -r _; }
+
+menu_install_reset() {
+  need_root
+  ensure_deps
+  ensure_singbox
+
+  echo "选择模式："
+  echo "  1) 普通分流（国内直连/国外代理）"
+  echo "  2) 完整分流（含广告域名拦截 + 更完整 DNS 分流）"
+  printf "请选择 [1-2] (默认 %s): " "${MODE}"
+  read -r m || true
+  case "${m:-$MODE}" in
+    1|2) MODE="${m:-$MODE}" ;;
+    *) echo "[WARN] 输入无效，保持 MODE=${MODE}" ;;
+  esac
+
+  if [ -z "${SUB_URL}" ]; then
+    echo ""
+    echo "订阅类型："
+    echo "  1) Clash 订阅（YAML）"
+    echo "  2) sing-box JSON（订阅链接或本地文件）"
+    printf "请选择 [1-2] (默认 1): "
+    read -r k || true
+    case "${k:-1}" in
+      1) SUB_KIND="clash" ;;
+      2) SUB_KIND="sbox" ;;
+      *) SUB_KIND="clash" ;;
+    esac
+
+    printf "请输入订阅 URL（或本地文件路径）: "
+    read -r SUB_URL || true
+  fi
+
+  save_state
+
+  echo "[*] 更新订阅并生成节点..."
+  sub_update_nodes "$SUB_KIND" "$SUB_URL" "$SB_NODES" || {
+    echo "[ERR] 订阅导入失败（你也可以进菜单 2 重试）"
+    pause
+    return 1
+  }
+
+  echo "[*] 写入配置..."
+  gen_config "$MODE" "$SB_NODES" "$SB_CONF" || {
+    echo "[ERR] 生成配置失败"
+    pause
+    return 1
+  }
+
+  echo "[*] 写入并注入防火墙..."
+  fw_install "$SB_DIR" || true
+
+  echo "[*] 启动服务..."
+  /etc/init.d/sb-shunt enable >/dev/null 2>&1 || true
+  svc_restart
+
+  echo "[OK] 完成"
+  pause
+}
+
+menu_sub_update() {
+  need_root
+  echo "当前订阅：${SUB_KIND}  ${SUB_URL}"
+  echo "  1) 改订阅类型"
+  echo "  2) 改订阅地址"
+  echo "  3) 立即更新订阅并重启"
+  echo "  0) 返回"
+  printf "请选择: "
+  read -r c || true
+  case "${c:-}" in
+    1)
+      echo "  1) clash  2) sbox"
+      printf "选择: "
+      read -r k || true
+      case "${k:-}" in
+        1) SUB_KIND="clash" ;;
+        2) SUB_KIND="sbox" ;;
+      esac
+      save_state
+      ;;
+    2)
+      printf "请输入订阅 URL/本地文件: "
+      read -r SUB_URL || true
+      save_state
+      ;;
+    3)
+      [ -n "$SUB_URL" ] || { echo "[ERR] 订阅为空"; pause; return 1; }
+      ensure_deps
+      ensure_singbox
+      sub_update_nodes "$SUB_KIND" "$SUB_URL" "$SB_NODES" || { echo "[ERR] 更新失败"; pause; return 1; }
+      gen_config "$MODE" "$SB_NODES" "$SB_CONF" || { echo "[ERR] 生成配置失败"; pause; return 1; }
+      svc_restart
+      echo "[OK] 已更新并重启"
+      pause
+      ;;
+  esac
+}
+
+menu_switch_node() {
+  need_root
+  [ -f "$SB_NODES" ] || { echo "[ERR] 还没有节点，请先导入订阅"; pause; return 1; }
+
+  echo "可选默认节点："
+  echo "  0) auto（自动优选/urltest）"
+  i=1
+  node_tags="$(jq -r '.[].tag' "$SB_NODES" 2>/dev/null || true)"
+  if [ -z "$node_tags" ]; then
+    echo "[ERR] 节点列表为空"
+    pause; return 1
+  fi
+  echo "$node_tags" | while IFS= read -r t; do
+    echo "  $i) $t"
+    i=$((i+1))
+  done
+
+  printf "请选择: "
+  read -r idx || true
+  if [ "${idx:-}" = "0" ] || [ -z "${idx:-}" ]; then
+    SELECTOR_DEFAULT="auto"
+  else
+    sel="$(echo "$node_tags" | sed -n "${idx}p" 2>/dev/null || true)"
+    [ -n "$sel" ] || { echo "[ERR] 选择无效"; pause; return 1; }
+    SELECTOR_DEFAULT="$sel"
+  fi
+  save_state
+
+  gen_config "$MODE" "$SB_NODES" "$SB_CONF" || { echo "[ERR] 生成配置失败"; pause; return 1; }
+  svc_restart
+  echo "[OK] 默认节点已设置为：${SELECTOR_DEFAULT}"
+  pause
+}
+
+menu_api_panel() {
+  need_root
+  echo "API/面板设置："
+  echo "  1) 开启 API"
+  echo "  2) 关闭 API"
+  echo "  3) 开启面板（UI）"
+  echo "  4) 卸载面板（UI）"
+  echo "  0) 返回"
+  printf "请选择: "
+  read -r c || true
+
+  case "${c:-}" in
+    1)
+      API_ENABLE=1
+      [ -n "$API_SECRET" ] || API_SECRET="$(rand_str 16)"
+      printf "监听地址 (默认 %s, 建议 127.0.0.1): " "$API_LISTEN"
+      read -r a || true
+      [ -n "${a:-}" ] && API_LISTEN="$a"
+      printf "端口 (默认 %s): " "$API_PORT"
+      read -r p || true
+      [ -n "${p:-}" ] && API_PORT="$p"
+      save_state
+      ;;
+    2)
+      API_ENABLE=0
+      PANEL_ENABLE=0
+      save_state
+      ;;
+    3)
+      API_ENABLE=1
+      PANEL_ENABLE=1
+      [ -n "$API_SECRET" ] || API_SECRET="$(rand_str 16)"
+      mkdir -p "$UI_DIR" || true
+      save_state
+      ;;
+    4)
+      PANEL_ENABLE=0
+      rm -rf "$UI_DIR" >/dev/null 2>&1 || true
+      save_state
+      ;;
+  esac
+
+  if [ -f "$SB_NODES" ]; then
+    gen_config "$MODE" "$SB_NODES" "$SB_CONF" || true
+    svc_restart
+  fi
+
+  echo ""
+  echo "API：${API_ENABLE}  面板：${PANEL_ENABLE}"
+  echo "external-controller: ${API_LISTEN}:${API_PORT}"
+  echo "secret: ${API_SECRET}"
+  echo "(如果绑定 127.0.0.1，可用 SSH 端口转发访问：ssh -L 9090:127.0.0.1:${API_PORT} root@路由IP)"
+  pause
+}
+
+menu_status_logs() {
+  echo "---- 配置路径：$SB_CONF"
+  echo "---- 日志路径：$SB_LOG"
+  echo ""
+  echo "最近 80 行日志："
+  tail -n 80 "$SB_LOG" 2>/dev/null || logread -e sing-box -l 80 2>/dev/null || true
+  pause
+}
+
+menu_uninstall_keep() {
+  need_root
+  echo "[*] 停止服务..."
+  /etc/init.d/sb-shunt stop >/dev/null 2>&1 || true
+  /etc/init.d/sb-shunt disable >/dev/null 2>&1 || true
+
+  echo "[*] 移除防火墙注入..."
+  fw_uninstall "$SB_DIR" || true
+
+  echo "[OK] 已卸载（保留配置：$SB_DIR）"
+  pause
+}
+
+menu_purge_all() {
+  need_root
+  echo "[*] 停止服务..."
+  /etc/init.d/sb-shunt stop >/dev/null 2>&1 || true
+  /etc/init.d/sb-shunt disable >/dev/null 2>&1 || true
+
+  echo "[*] 移除防火墙注入..."
+  fw_uninstall "$SB_DIR" || true
+
+  echo "[*] 删除文件..."
+  rm -f /etc/init.d/sb-shunt >/dev/null 2>&1 || true
+  rm -f /usr/bin/sb-shunt >/dev/null 2>&1 || true
+  rm -rf /usr/lib/sb-shunt >/dev/null 2>&1 || true
+  rm -rf "$SB_DIR" >/dev/null 2>&1 || true
+  rm -rf /usr/share/sb-shunt >/dev/null 2>&1 || true
+
+  echo "[OK] 完全卸载完成"
+  pause
+}
+
+menu_update_script() {
+  need_root
+  echo "[*] 使用 install.sh 覆盖更新脚本（保留配置）..."
+  TMP="/tmp/sb-shunt-install.$$"
+  url="https://raw.githubusercontent.com/${REPO:-sockc/sb-shunt}/${REF:-main}/openwrt/install.sh"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL --compressed "$url" -o "$TMP"
+  else
+    wget -qO "$TMP" "$url"
+  fi
+  sh "$TMP" || true
+  rm -f "$TMP" >/dev/null 2>&1 || true
+  pause
+}
+
+# args (for init.d)
+if [ "${1:-}" = "--apply-fw" ]; then
+  load_state
+  fw_apply_now "$SB_DIR" || exit 0
+  exit 0
+fi
+
+load_state
+
+while true; do
+  show_header
+  echo "  1) 安装/重置"
+  echo "  2) 订阅导入/更新"
+  echo "  3) 切换默认节点（没面板也能切）"
+  echo "  4) API/面板设置"
+  echo "  5) 查看状态/日志"
+  echo "  6) 卸载（保留配置）"
+  echo "  7) 完全卸载"
+  echo ""
+  echo "  99) 更新脚本"
+  echo "  0) 退出"
+  echo ""
+  printf "请输入选项 [0-99]: "
+  read -r opt || true
+
+  case "${opt:-}" in
+    1) menu_install_reset ;;
+    2) menu_sub_update ;;
+    3) menu_switch_node ;;
+    4) menu_api_panel ;;
+    5) menu_status_logs ;;
+    6) menu_uninstall_keep ;;
+    7) menu_purge_all ;;
+    99) menu_update_script ;;
+    0) exit 0 ;;
+    *) echo "[WARN] 无效选项"; pause ;;
+  esac
+done
